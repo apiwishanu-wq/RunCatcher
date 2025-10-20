@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RunCatcher - Hybrid Mode</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>RunCatcher - Hybrid Mode</h1>
+            <p>Face detection + manual capture with motion tracking</p>
+        </header>
+
+        <div class="main-content">
+            <div class="video-section">
+                <div class="video-container">
+                    <video id="video" autoplay muted playsinline></video>
+                    <canvas id="canvas" width="640" height="480"></canvas>
+                </div>
+                <div class="controls">
+                    <button id="startBtn" class="btn btn-primary">Start Detection</button>
+                    <button id="stopBtn" class="btn btn-secondary" disabled>Stop Detection</button>
+                    <button id="captureBtn" class="btn btn-primary" disabled>Manual Capture</button>
+                    <button id="motionBtn" class="btn btn-secondary" disabled>Toggle Motion</button>
+                    <div class="status">
+                        <span id="status">Ready to start</span>
+                    </div>
+                    <div class="motion-info">
+                        <div>Motion Detection: <span id="motionStatus">Off</span></div>
+                        <div>Motion Speed: <span id="motionSpeed">0</span> px/s</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="runners-section">
+                <h2>Captured Photos</h2>
+                <div id="runnersList" class="runners-list">
+                    <p class="no-runners">No photos captured yet</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load face-api.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script>
+        // Hybrid version: Face detection + manual capture + motion tracking
+        class RunCatcherHybrid {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.startBtn = document.getElementById('startBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.captureBtn = document.getElementById('captureBtn');
+                this.motionBtn = document.getElementById('motionBtn');
+                this.status = document.getElementById('status');
+                this.motionStatus = document.getElementById('motionStatus');
+                this.motionSpeed = document.getElementById('motionSpeed');
+                this.runnersList = document.getElementById('runnersList');
+                
+                this.isRunning = false;
+                this.faceApiLoaded = false;
+                this.motionDetection = false;
+                this.previousFaces = [];
+                this.photoCount = 0;
+                this.motionThreshold = 0.1;
+                this.captureCooldown = 2000;
+                this.lastCaptureTime = 0;
+                this.currentMotionSpeed = 0;
+                
+                this.init();
+            }
+            
+            async init() {
+                this.setupEventListeners();
+                await this.loadFaceApi();
+                await this.initVideoStream();
+            }
+            
+            setupEventListeners() {
+                this.startBtn.addEventListener('click', () => this.startDetection());
+                this.stopBtn.addEventListener('click', () => this.stopDetection());
+                this.captureBtn.addEventListener('click', () => this.manualCapture());
+                this.motionBtn.addEventListener('click', () => this.toggleMotionDetection());
+            }
+            
+            async loadFaceApi() {
+                try {
+                    this.status.textContent = 'Loading face detection models...';
+                    
+                    // Try multiple CDN sources for better reliability
+                    const modelUrls = [
+                        'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights',
+                        'https://unpkg.com/face-api.js@0.22.2/weights',
+                        'https://cdnjs.cloudflare.com/ajax/libs/face-api.js/0.22.2/weights'
+                    ];
+                    
+                    let modelsLoaded = false;
+                    
+                    for (const baseUrl of modelUrls) {
+                        try {
+                            console.log(`Trying to load models from: ${baseUrl}`);
+                            
+                            await Promise.all([
+                                faceapi.nets.tinyFaceDetector.loadFromUri(baseUrl),
+                                faceapi.nets.faceLandmark68Net.loadFromUri(baseUrl),
+                                faceapi.nets.faceRecognitionNet.loadFromUri(baseUrl)
+                            ]);
+                            
+                            modelsLoaded = true;
+                            console.log('Models loaded successfully from:', baseUrl);
+                            break;
+                        } catch (error) {
+                            console.warn(`Failed to load from ${baseUrl}:`, error.message);
+                            continue;
+                        }
+                    }
+                    
+                    if (modelsLoaded) {
+                        this.faceApiLoaded = true;
+                        this.status.textContent = 'Models loaded. Ready to start detection.';
+                        this.startBtn.disabled = false;
+                    } else {
+                        // Try fallback with just basic model
+                        this.status.textContent = 'Trying fallback model...';
+                        await faceapi.nets.tinyFaceDetector.loadFromUri('https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights');
+                        this.faceApiLoaded = true;
+                        this.status.textContent = 'Basic model loaded. Ready to start detection.';
+                        this.startBtn.disabled = false;
+                    }
+                    
+                } catch (error) {
+                    console.error('Error loading face-api models:', error);
+                    this.status.textContent = 'Error loading face detection models. Manual capture still available.';
+                    this.startBtn.disabled = false;
+                    this.captureBtn.disabled = false;
+                }
+            }
+            
+            async initVideoStream() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            facingMode: 'user'
+                        }
+                    });
+                    
+                    this.video.srcObject = stream;
+                    this.video.onloadedmetadata = () => {
+                        this.canvas.width = this.video.videoWidth;
+                        this.canvas.height = this.video.videoHeight;
+                    };
+                    
+                } catch (error) {
+                    console.error('Error accessing camera:', error);
+                    this.status.textContent = 'Error accessing camera. Please check permissions.';
+                }
+            }
+            
+            async startDetection() {
+                if (!this.faceApiLoaded) {
+                    this.status.textContent = 'Face detection models not loaded yet. Using manual mode only.';
+                    this.captureBtn.disabled = false;
+                    return;
+                }
+                
+                this.isRunning = true;
+                this.startBtn.disabled = true;
+                this.stopBtn.disabled = false;
+                this.captureBtn.disabled = false;
+                this.motionBtn.disabled = false;
+                this.status.textContent = 'Detection active - face detection and manual capture available';
+                
+                this.detectFaces();
+            }
+            
+            stopDetection() {
+                this.isRunning = false;
+                this.motionDetection = false;
+                this.startBtn.disabled = false;
+                this.stopBtn.disabled = true;
+                this.captureBtn.disabled = false;
+                this.motionBtn.disabled = true;
+                this.status.textContent = 'Detection stopped. Manual capture still available.';
+                
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.motionStatus.textContent = 'Off';
+                this.motionSpeed.textContent = '0';
+            }
+            
+            toggleMotionDetection() {
+                this.motionDetection = !this.motionDetection;
+                this.motionStatus.textContent = this.motionDetection ? 'On' : 'Off';
+                this.motionBtn.textContent = this.motionDetection ? 'Stop Motion' : 'Start Motion';
+                this.motionBtn.className = this.motionDetection ? 'btn btn-primary' : 'btn btn-secondary';
+                
+                if (this.motionDetection) {
+                    this.status.textContent = 'Motion detection active - will auto-capture on movement';
+                } else {
+                    this.status.textContent = 'Motion detection off - manual capture only';
+                }
+            }
+            
+            async detectFaces() {
+                if (!this.isRunning) return;
+                
+                try {
+                    const detections = await faceapi
+                        .detectAllFaces(this.video, new faceapi.TinyFaceDetectorOptions())
+                        .withFaceLandmarks();
+                    
+                    this.drawBoundingBoxes(detections);
+                    
+                    if (this.motionDetection) {
+                        this.calculateMotion(detections);
+                    }
+                    
+                } catch (error) {
+                    console.error('Error detecting faces:', error);
+                }
+                
+                requestAnimationFrame(() => this.detectFaces());
+            }
+            
+            drawBoundingBoxes(detections) {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                detections.forEach((detection, index) => {
+                    const box = detection.detection.box;
+                    const isRunning = this.motionDetection && this.currentMotionSpeed > this.motionThreshold;
+                    
+                    // Draw bounding box
+                    this.ctx.strokeStyle = isRunning ? '#e74c3c' : '#c0392b';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.strokeRect(box.x, box.y, box.width, box.height);
+                    
+                    // Draw label
+                    this.ctx.fillStyle = isRunning ? '#e74c3c' : '#c0392b';
+                    this.ctx.font = '16px Arial';
+                    this.ctx.fillText(
+                        isRunning ? 'RUNNING!' : `Face ${index + 1}`,
+                        box.x,
+                        box.y - 10
+                    );
+                });
+            }
+            
+            calculateMotion(currentDetections) {
+                if (this.previousFaces.length === 0) {
+                    this.previousFaces = currentDetections.map(det => ({
+                        box: det.detection.box,
+                        timestamp: Date.now()
+                    }));
+                    return;
+                }
+                
+                currentDetections.forEach((currentDet, index) => {
+                    const currentBox = currentDet.detection.box;
+                    const currentTime = Date.now();
+                    
+                    // Find closest previous face
+                    let closestPrev = null;
+                    let minDistance = Infinity;
+                    
+                    this.previousFaces.forEach(prevFace => {
+                        const distance = this.calculateDistance(currentBox, prevFace.box);
+                        if (distance < minDistance) {
+                            minDistance = distance;
+                            closestPrev = prevFace;
+                        }
+                    });
+                    
+                    if (closestPrev) {
+                        const timeDiff = (currentTime - closestPrev.timestamp) / 1000;
+                        const motionSpeed = this.calculateMotionSpeed(currentBox, closestPrev.box, timeDiff);
+                        this.currentMotionSpeed = motionSpeed;
+                        this.motionSpeed.textContent = motionSpeed.toFixed(2);
+                        
+                        // Auto-capture if motion is detected
+                        if (motionSpeed > this.motionThreshold) {
+                            this.autoCapture(currentDet, motionSpeed);
+                        }
+                    }
+                });
+                
+                // Update previous faces
+                this.previousFaces = currentDetections.map(det => ({
+                    box: det.detection.box,
+                    timestamp: Date.now()
+                }));
+            }
+            
+            calculateDistance(box1, box2) {
+                const center1 = {
+                    x: box1.x + box1.width / 2,
+                    y: box1.y + box1.height / 2
+                };
+                const center2 = {
+                    x: box2.x + box2.width / 2,
+                    y: box2.y + box2.height / 2
+                };
+                
+                return Math.sqrt(
+                    Math.pow(center1.x - center2.x, 2) + Math.pow(center1.y - center2.y, 2)
+                );
+            }
+            
+            calculateMotionSpeed(currentBox, previousBox, timeDiff) {
+                if (timeDiff === 0) return 0;
+                
+                const currentCenter = {
+                    x: currentBox.x + currentBox.width / 2,
+                    y: currentBox.y + currentBox.height / 2
+                };
+                const previousCenter = {
+                    x: previousBox.x + previousBox.width / 2,
+                    y: previousBox.y + previousBox.height / 2
+                };
+                
+                const distance = Math.sqrt(
+                    Math.pow(currentCenter.x - previousCenter.x, 2) + 
+                    Math.pow(currentCenter.y - previousCenter.y, 2)
+                );
+                
+                return distance / timeDiff;
+            }
+            
+            manualCapture() {
+                this.photoCount++;
+                
+                try {
+                    // Capture the current frame
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = this.video.videoWidth;
+                    canvas.height = this.video.videoHeight;
+                    
+                    // Draw the video frame
+                    ctx.drawImage(this.video, 0, 0, canvas.width, canvas.height);
+                    
+                    // Convert to base64
+                    const imageData = canvas.toDataURL('image/jpeg', 0.8);
+                    
+                    // Update UI
+                    this.updatePhotoList(imageData, 'Manual Capture', this.currentMotionSpeed);
+                    
+                    this.status.textContent = `Manual photo #${this.photoCount} captured!`;
+                    
+                } catch (error) {
+                    console.error('Error capturing photo:', error);
+                    this.status.textContent = 'Error capturing photo.';
+                }
+            }
+            
+            autoCapture(detection, motionSpeed) {
+                const now = Date.now();
+                if (now - this.lastCaptureTime < this.captureCooldown) {
+                    return; // Too soon since last capture
+                }
+                
+                this.lastCaptureTime = now;
+                this.photoCount++;
+                
+                try {
+                    // Capture the current frame
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = this.video.videoWidth;
+                    canvas.height = this.video.videoHeight;
+                    
+                    // Draw the video frame
+                    ctx.drawImage(this.video, 0, 0, canvas.width, canvas.height);
+                    
+                    // Crop to face area with some padding
+                    const box = detection.detection.box;
+                    const padding = 50;
+                    const cropX = Math.max(0, box.x - padding);
+                    const cropY = Math.max(0, box.y - padding);
+                    const cropWidth = Math.min(canvas.width - cropX, box.width + padding * 2);
+                    const cropHeight = Math.min(canvas.height - cropY, box.height + padding * 2);
+                    
+                    const faceCanvas = document.createElement('canvas');
+                    const faceCtx = faceCanvas.getContext('2d');
+                    faceCanvas.width = cropWidth;
+                    faceCanvas.height = cropHeight;
+                    
+                    faceCtx.drawImage(
+                        canvas,
+                        cropX, cropY, cropWidth, cropHeight,
+                        0, 0, cropWidth, cropHeight
+                    );
+                    
+                    // Convert to base64
+                    const imageData = faceCanvas.toDataURL('image/jpeg', 0.8);
+                    
+                    // Update UI
+                    this.updatePhotoList(imageData, 'Auto Motion', motionSpeed);
+                    
+                    this.status.textContent = `Auto-captured #${this.photoCount} - Motion: ${motionSpeed.toFixed(2)} px/s`;
+                    
+                } catch (error) {
+                    console.error('Error auto-capturing:', error);
+                }
+            }
+            
+            updatePhotoList(imageData, captureType, motionSpeed) {
+                const photoItem = document.createElement('div');
+                photoItem.className = 'runner-item';
+                photoItem.innerHTML = `
+                    <div class="runner-number">${captureType} #${this.photoCount}</div>
+                    <img src="${imageData}" alt="Photo ${this.photoCount}" class="runner-image">
+                    <div class="runner-info">
+                        <div>Type: ${captureType}</div>
+                        <div>Motion Speed: ${motionSpeed ? motionSpeed.toFixed(2) + ' px/s' : 'N/A'}</div>
+                        <div>Captured: ${new Date().toLocaleTimeString()}</div>
+                    </div>
+                `;
+                
+                // Remove "no photos" message if it exists
+                const noPhotos = this.runnersList.querySelector('.no-runners');
+                if (noPhotos) {
+                    noPhotos.remove();
+                }
+                
+                // Add to top of list
+                this.runnersList.insertBefore(photoItem, this.runnersList.firstChild);
+            }
+        }
+        
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new RunCatcherHybrid();
+        });
+    </script>
+</body>
+</html>

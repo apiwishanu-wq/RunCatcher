@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RunCatcher - Real-time Face & Running Detection</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>RunCatcher</h1>
+            <p>Real-time face and running detection using webcam/DroidCam</p>
+        </header>
+
+        <div class="main-content">
+            <div class="video-section">
+                <div class="video-container">
+                    <video id="video" autoplay muted playsinline></video>
+                    <canvas id="canvas" width="640" height="480"></canvas>
+                </div>
+                <div class="controls">
+                    <button id="startBtn" class="btn btn-primary">Start Detection</button>
+                    <button id="stopBtn" class="btn btn-secondary" disabled>Stop Detection</button>
+                    <div class="status">
+                        <span id="status">Ready to start</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="runners-section">
+                <h2>Captured Runners</h2>
+                <div id="runnersList" class="runners-list">
+                    <p class="no-runners">No runners captured yet</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load face-api.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
